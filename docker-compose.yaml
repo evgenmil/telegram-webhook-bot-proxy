@@ -1,0 +1,8 @@
+# Локальный запуск: `docker compose up --build` (нужен `.env` по образцу .env.example)
+services:
+  proxy:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
