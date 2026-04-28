@@ -1,6 +1,7 @@
 """Прозрачный прокси к https://api.telegram.org — токен только в path запроса, в памяти не храним."""
 
 import logging
+import re
 
 import httpx
 from starlette.requests import Request
@@ -27,6 +28,20 @@ _SKIP_REQUEST_HEADERS: frozenset[bytes] = frozenset(
     }
 )
 
+_BOT_TOKEN_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"bot\d+:[A-Za-z0-9_-]+"),
+    re.compile(r"bot\d+%3A[A-Za-z0-9_-]+", re.IGNORECASE),
+)
+
+
+def redact_bot_token_in_text(value: str) -> str:
+    """Маскирует bot token в произвольной строке/URL для логов."""
+    out = value
+    for pattern in _BOT_TOKEN_PATTERNS:
+        out = pattern.sub("bot<redacted>", out)
+    return out
+
+
 def redact_telegram_path_for_log(path: str) -> str:
     """Первая часть /bot<token>/… → /bot<redacted>/… для логов."""
     if not path or path == "/":
@@ -34,7 +49,7 @@ def redact_telegram_path_for_log(path: str) -> str:
     parts = [p for p in path.split("/") if p]
     if len(parts) >= 1 and parts[0].startswith("bot") and len(parts[0]) > 3:
         parts[0] = "bot<redacted>"
-    return "/" + "/".join(parts)
+    return redact_bot_token_in_text("/" + "/".join(parts))
 
 
 class TelegramApiForwarder:

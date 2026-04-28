@@ -15,6 +15,7 @@ from app.main_app_client import MainAppClient
 from app.settings import get_settings
 from app.telegram_api_forwarder import (
     TelegramApiForwarder,
+    redact_bot_token_in_text,
     redact_telegram_path_for_log,
 )
 
@@ -34,6 +35,51 @@ _TELEGRAM_FORWARD_METHODS = [
 ]
 
 
+class RedactTelegramTokenLogFilter(logging.Filter):
+    """Маскирует bot token в сообщениях/аргументах/traceback логгеров uvicorn/httpx/app."""
+
+    @staticmethod
+    def _redact_obj(value: object) -> object:
+        if isinstance(value, str):
+            return redact_bot_token_in_text(value)
+        return value
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.msg = self._redact_obj(record.msg)
+        if isinstance(record.args, dict):
+            record.args = {k: self._redact_obj(v) for k, v in record.args.items()}
+        elif isinstance(record.args, tuple):
+            record.args = tuple(self._redact_obj(v) for v in record.args)
+        elif record.args:
+            record.args = self._redact_obj(record.args)
+        if record.exc_info and not record.exc_text:
+            record.exc_text = logging.Formatter().formatException(record.exc_info)
+        if record.exc_text:
+            record.exc_text = redact_bot_token_in_text(record.exc_text)
+        if record.stack_info:
+            record.stack_info = redact_bot_token_in_text(record.stack_info)
+        return True
+
+
+# Логгеры, в которых может всплыть bot token: uvicorn пишет URL в access/error,
+# httpx и httpcore — в HTTP-сообщениях, root — на случай ошибочных запросов через app.*
+_REDACT_TARGET_LOGGERS: tuple[str, ...] = (
+    "",  # root
+    "uvicorn",
+    "uvicorn.access",
+    "uvicorn.error",
+    "httpx",
+    "httpcore",
+)
+
+
+def _attach_filter_once(target: logging.Logger | logging.Handler) -> None:
+    for f in target.filters:
+        if isinstance(f, RedactTelegramTokenLogFilter):
+            return
+    target.addFilter(RedactTelegramTokenLogFilter())
+
+
 def configure_logging(level: str) -> None:
     lvl = getattr(logging, level.upper(), None)
     if not isinstance(lvl, int):
@@ -48,6 +94,14 @@ def configure_logging(level: str) -> None:
         root.setLevel(lvl)
         for h in root.handlers:
             h.setLevel(lvl)
+
+    # Фильтр и на сами логгеры (для записей, идущих в них напрямую),
+    # и на их handlers — чтобы покрыть в т.ч. ошибочные запросы / traceback'и
+    for logger_name in _REDACT_TARGET_LOGGERS:
+        logger = logging.getLogger(logger_name)
+        _attach_filter_once(logger)
+        for handler in logger.handlers:
+            _attach_filter_once(handler)
 
 
 @asynccontextmanager
