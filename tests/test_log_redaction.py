@@ -3,6 +3,7 @@
 import logging
 
 from app.main import (
+    RedactingFormatter,
     RedactTelegramTokenLogFilter,
     configure_logging,
 )
@@ -71,3 +72,24 @@ def test_configure_logging_does_not_duplicate_filter() -> None:
             f for f in logger.filters if isinstance(f, RedactTelegramTokenLogFilter)
         ]
         assert len(redact_filters) <= 1, f"duplicate redact filter on logger {name!r}"
+
+
+def test_redacting_formatter_masks_final_string() -> None:
+    """Final-line defense: даже если фильтр обойдён, formatter маскирует токен."""
+    inner = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    formatter = RedactingFormatter(inner)
+    record = _make_record(
+        msg='HTTP Request: GET %s "HTTP/1.1 400 Bad Request"',
+        args=(_TOKEN_URL,),
+    )
+    out = formatter.format(record)
+    assert _TOKEN_URL not in out
+    assert "bot<redacted>" in out
+
+
+def test_configure_logging_wraps_root_handler_with_redacting_formatter() -> None:
+    """После configure_logging у root handler должен быть RedactingFormatter."""
+    configure_logging("INFO")
+    root = logging.getLogger()
+    assert root.handlers, "root logger must have at least one handler"
+    assert any(isinstance(h.formatter, RedactingFormatter) for h in root.handlers)

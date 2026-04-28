@@ -61,6 +61,28 @@ class RedactTelegramTokenLogFilter(logging.Filter):
         return True
 
 
+class RedactingFormatter(logging.Formatter):
+    """Оборачивает существующий Formatter; маскирует bot token в финальной строке.
+
+    Дополнительный (и самый надёжный) рубеж: даже если фильтр на logger обойдён
+    (например, запись пришла от дочернего/сторонего логгера), здесь токен будет
+    замаскирован уже в готовой к выводу строке.
+    """
+
+    def __init__(self, inner: logging.Formatter) -> None:
+        super().__init__()
+        self._inner = inner
+
+    def format(self, record: logging.LogRecord) -> str:
+        return redact_bot_token_in_text(self._inner.format(record))
+
+    def formatException(self, ei) -> str:  # noqa: ANN001, N802 — сигнатура stdlib
+        return redact_bot_token_in_text(self._inner.formatException(ei))
+
+    def formatStack(self, stack_info: str) -> str:  # noqa: N802 — сигнатура stdlib
+        return redact_bot_token_in_text(self._inner.formatStack(stack_info))
+
+
 # Логгеры, в которых может всплыть bot token: uvicorn пишет URL в access/error,
 # httpx и httpcore — в HTTP-сообщениях, root — на случай ошибочных запросов через app.*
 _REDACT_TARGET_LOGGERS: tuple[str, ...] = (
@@ -80,6 +102,14 @@ def _attach_filter_once(target: logging.Logger | logging.Handler) -> None:
     target.addFilter(RedactTelegramTokenLogFilter())
 
 
+def _wrap_formatter_once(handler: logging.Handler) -> None:
+    current = handler.formatter
+    if isinstance(current, RedactingFormatter):
+        return
+    inner = current or logging.Formatter("%(message)s")
+    handler.setFormatter(RedactingFormatter(inner))
+
+
 def configure_logging(level: str) -> None:
     lvl = getattr(logging, level.upper(), None)
     if not isinstance(lvl, int):
@@ -95,13 +125,17 @@ def configure_logging(level: str) -> None:
         for h in root.handlers:
             h.setLevel(lvl)
 
-    # Фильтр и на сами логгеры (для записей, идущих в них напрямую),
-    # и на их handlers — чтобы покрыть в т.ч. ошибочные запросы / traceback'и
+    # Двойная защита от утечки токена в логах:
+    #   1) фильтр редактирует record.msg/args/exc_text/stack_info до форматирования;
+    #   2) RedactingFormatter — финальный рубеж: маскирует уже отформатированную
+    #      строку перед emit (важно, т.к. uvicorn после нашего setup всё равно
+    #      зовёт dictConfig для своих логгеров и создаёт новые handlers).
     for logger_name in _REDACT_TARGET_LOGGERS:
         logger = logging.getLogger(logger_name)
         _attach_filter_once(logger)
         for handler in logger.handlers:
             _attach_filter_once(handler)
+            _wrap_formatter_once(handler)
 
 
 @asynccontextmanager
