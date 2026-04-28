@@ -16,7 +16,6 @@ from app.settings import get_settings
 from app.telegram_api_forwarder import (
     TelegramApiForwarder,
     redact_bot_token_in_text,
-    redact_telegram_path_for_log,
 )
 
 log = logging.getLogger(__name__)
@@ -35,38 +34,12 @@ _TELEGRAM_FORWARD_METHODS = [
 ]
 
 
-class RedactTelegramTokenLogFilter(logging.Filter):
-    """Маскирует bot token в сообщениях/аргументах/traceback логгеров uvicorn/httpx/app."""
-
-    @staticmethod
-    def _redact_obj(value: object) -> object:
-        if isinstance(value, str):
-            return redact_bot_token_in_text(value)
-        return value
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        record.msg = self._redact_obj(record.msg)
-        if isinstance(record.args, dict):
-            record.args = {k: self._redact_obj(v) for k, v in record.args.items()}
-        elif isinstance(record.args, tuple):
-            record.args = tuple(self._redact_obj(v) for v in record.args)
-        elif record.args:
-            record.args = self._redact_obj(record.args)
-        if record.exc_info and not record.exc_text:
-            record.exc_text = logging.Formatter().formatException(record.exc_info)
-        if record.exc_text:
-            record.exc_text = redact_bot_token_in_text(record.exc_text)
-        if record.stack_info:
-            record.stack_info = redact_bot_token_in_text(record.stack_info)
-        return True
-
-
 class RedactingFormatter(logging.Formatter):
-    """Оборачивает существующий Formatter; маскирует bot token в финальной строке.
+    """Оборачивает существующий Formatter и маскирует bot token в финальной строке.
 
-    Дополнительный (и самый надёжный) рубеж: даже если фильтр на logger обойдён
-    (например, запись пришла от дочернего/сторонего логгера), здесь токен будет
-    замаскирован уже в готовой к выводу строке.
+    Это финальный рубеж перед emit: маскирует и сообщение, и traceback (formatException),
+    и stack_info — независимо от того, какой логгер записал запись. Покрывает в т.ч.
+    `httpx`, `uvicorn.access`, `uvicorn.error` и ошибочные запросы.
     """
 
     def __init__(self, inner: logging.Formatter) -> None:
@@ -83,8 +56,9 @@ class RedactingFormatter(logging.Formatter):
         return redact_bot_token_in_text(self._inner.formatStack(stack_info))
 
 
-# Логгеры, в которых может всплыть bot token: uvicorn пишет URL в access/error,
-# httpx и httpcore — в HTTP-сообщениях, root — на случай ошибочных запросов через app.*
+# Логгеры, чьи handlers нужно обернуть редактирующим formatter'ом.
+# uvicorn пишет URL в access/error; httpx/httpcore — в сообщениях запросов;
+# root покрывает все приложение-логгеры (включая ошибочные запросы через app.*).
 _REDACT_TARGET_LOGGERS: tuple[str, ...] = (
     "",  # root
     "uvicorn",
@@ -93,13 +67,6 @@ _REDACT_TARGET_LOGGERS: tuple[str, ...] = (
     "httpx",
     "httpcore",
 )
-
-
-def _attach_filter_once(target: logging.Logger | logging.Handler) -> None:
-    for f in target.filters:
-        if isinstance(f, RedactTelegramTokenLogFilter):
-            return
-    target.addFilter(RedactTelegramTokenLogFilter())
 
 
 def _wrap_formatter_once(handler: logging.Handler) -> None:
@@ -125,16 +92,9 @@ def configure_logging(level: str) -> None:
         for h in root.handlers:
             h.setLevel(lvl)
 
-    # Двойная защита от утечки токена в логах:
-    #   1) фильтр редактирует record.msg/args/exc_text/stack_info до форматирования;
-    #   2) RedactingFormatter — финальный рубеж: маскирует уже отформатированную
-    #      строку перед emit (важно, т.к. uvicorn после нашего setup всё равно
-    #      зовёт dictConfig для своих логгеров и создаёт новые handlers).
     for logger_name in _REDACT_TARGET_LOGGERS:
         logger = logging.getLogger(logger_name)
-        _attach_filter_once(logger)
         for handler in logger.handlers:
-            _attach_filter_once(handler)
             _wrap_formatter_once(handler)
 
 
@@ -168,7 +128,7 @@ def create_app() -> FastAPI:
         log.info(
             "%s %s",
             request.method,
-            redact_telegram_path_for_log(request.url.path),
+            redact_bot_token_in_text(request.url.path),
         )
         return await call_next(request)
 

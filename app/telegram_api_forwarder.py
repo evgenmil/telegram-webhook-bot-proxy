@@ -35,21 +35,11 @@ _BOT_TOKEN_PATTERNS: tuple[re.Pattern[str], ...] = (
 
 
 def redact_bot_token_in_text(value: str) -> str:
-    """Маскирует bot token в произвольной строке/URL для логов."""
+    """Маскирует bot token (`bot<digits>:<...>`, в т.ч. URL-encoded) в любой строке."""
     out = value
     for pattern in _BOT_TOKEN_PATTERNS:
         out = pattern.sub("bot<redacted>", out)
     return out
-
-
-def redact_telegram_path_for_log(path: str) -> str:
-    """Первая часть /bot<token>/… → /bot<redacted>/… для логов."""
-    if not path or path == "/":
-        return path
-    parts = [p for p in path.split("/") if p]
-    if len(parts) >= 1 and parts[0].startswith("bot") and len(parts[0]) > 3:
-        parts[0] = "bot<redacted>"
-    return redact_bot_token_in_text("/" + "/".join(parts))
 
 
 class TelegramApiForwarder:
@@ -90,7 +80,7 @@ class TelegramApiForwarder:
 
     async def forward(self, request: Request) -> httpx.Response:
         url = self._upstream_url(request)
-        log.debug("Upstream Telegram: %s", redact_telegram_path_for_log(request.url.path))
+        log.debug("Upstream Telegram: %s", redact_bot_token_in_text(request.url.path))
         headers = self._request_headers_to_upstream(request)
         body: bytes = await request.body()
         return await self._client.request(
