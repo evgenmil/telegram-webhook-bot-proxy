@@ -27,9 +27,10 @@ class Settings(BaseSettings):
     proxy_incoming_webhook_path: str = "/webhook/telegram"
     main_app_incoming_path: str = "/api/telegram/webhook"
 
-    # Таймауты исходящих HTTP (httpx), секунды
+    # Таймауты исходящих HTTP (httpx), секунды.
+    # getUpdates: Telegram держит соединение до timeout (макс. 50) — read должен быть с запасом.
     http_connect_timeout: float = 5.0
-    http_read_timeout: float = 30.0
+    http_read_timeout: float = 90.0
 
     log_level: str = "INFO"
 
