@@ -14,6 +14,7 @@
 | 6 | Локальный запуск: `make` и при необходимости Docker | ✅ готово | 2026-04-24 | `make install` / `make run` / `make test`; `docker compose` + `Dockerfile` |
 | 7 | Исходящие: прозрачный Bot API, без хранения токена (PHP-совместимость) | ✅ готово | 2026-04-24 | Путь `/{bot<token>}/{method}` к upstream; `curl` к `/bot…/getMe`, логи с маской токена |
 | 8 | Вебхуки нескольких ботов: проброс хвоста пути | ✅ готово | 2026-10-19 | `pytest`: `/webhook/telegram/<id>` → `MAIN_APP_INCOMING_PATH/<id>`, `..` → 404 |
+| 9 | OpenRouter-прокси и секрет доступа (EU egress) | ✅ готово | 2026-10-19 | `pytest` (MockTransport): проброс path/query/body/Authorization, SSE, 502, `..` → 404, `X-Proxy-Access-Token` → 401/200; с реальным OpenRouter не проверяли |
 
 **Статусы в таблице:** ⏳ ожидает · 🔄 в работе · ✅ готово
 
@@ -90,6 +91,15 @@
 - [x] Маршрут `PROXY_INCOMING_WEBHOOK_PATH/{suffix:path}` (до `/{bot}/…`); старый путь без хвоста работает как раньше
 - [x] Пересылка на `MAIN_APP_INCOMING_PATH/<хвост>`; сегменты `.`/`..` → 404
 - [x] Тесты (`tests/test_webhook_suffix.py`), README и `.env.example` обновлены
+
+### Итерация 9 — OpenRouter-прокси и секрет доступа (EU egress)
+
+Основное приложение не может напрямую ходить в OpenRouter; прокси размещён в ЕС и расширяется до egress-прокси: `/openrouter/<path>` → `https://openrouter.ai/<path>`. Ключ OpenRouter передаёт клиент в `Authorization`, прокси его не хранит. Чтобы прокси не был открытым, добавлен опциональный общий секрет.
+
+- [x] `OpenRouterForwarder` + маршрут `/openrouter/{path:path}` (до `/{bot}/…`), стриминг ответа (SSE), `OPENROUTER_READ_TIMEOUT`
+- [x] Ошибки сети/таймаута → `502`/`504`, сегменты `.`/`..` → 404
+- [x] `PROXY_ACCESS_TOKEN`: при заданном значении исходящие маршруты требуют `X-Proxy-Access-Token` (иначе 401), заголовок в upstream не уходит
+- [x] Тесты (`tests/test_openrouter_forward.py`, `tests/test_proxy_access.py`); vision, conventions, README и `.env.example` обновлены
 
 ---
 

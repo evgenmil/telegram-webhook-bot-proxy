@@ -1,13 +1,20 @@
 # telegram-webhook-bot-proxy
 
-HTTP layer between your **main application** and the **Telegram Bot API**: outbound calls to Telegram go through this service; incoming webhooks from Telegram are received here and forwarded to the main app. The target is a minimal MVP to validate an integration idea (see [vision](docs/vision.md) for details).
+EU-hosted **egress proxy** for your **main application**: it reaches external APIs that the main app cannot reach directly. Currently:
+
+- **Telegram Bot API** — outbound calls to Telegram go through this service; incoming webhooks from Telegram are received here and forwarded to the main app;
+- **OpenRouter** — transparent pass-through of LLM API calls, including streaming.
+
+Upstream secrets (bot token, OpenRouter key) are always sent by the client and never stored in the proxy. The target is a minimal MVP (see [vision](docs/vision.md) for details).
 
 ## Features
 
 - **Outbound traffic (transparent Bot API)** — same path shape as `https://api.telegram.org`: `https://<proxy>/bot<token>/<method>`. The token is **not** stored by the service; it is passed in the URL by the client (as in the official API). Works with libraries such as `TelegramBot\Api` (PHP): set the host to the proxy URL; the path layout stays the same.
 - **Incoming webhook** — `POST` to a configurable path (default `/webhook/telegram`): the request body is forwarded to the configured main-app URL. Any path tail is passed through as is: `/webhook/telegram/<bot_id>` → `MAIN_APP_INCOMING_PATH/<bot_id>` — one proxy serves several bots.
+- **OpenRouter proxy** — `https://<proxy>/openrouter/<path>` → `https://openrouter.ai/<path>`, for hosts that cannot reach OpenRouter directly. The API key is **not** stored by the service: the client sends its own `Authorization: Bearer <key>`. Responses are streamed, so `stream: true` (SSE) works.
+- **Access token (optional, recommended)** — if `PROXY_ACCESS_TOKEN` is set, outbound routes (`/bot<token>/…`, `/openrouter/…`) require the header `X-Proxy-Access-Token: <value>`, otherwise `401`. The header is not forwarded upstream. The webhook and `/health` are not affected. Without it, anyone who knows the URL can use the proxy with their own keys.
 - **Health check** — `GET /health` for probes and monitoring.
-- **Configuration from env** (including [`.env.example`](.env.example)) — main app URL, paths, timeouts, optional bearer to the backend. The Telegram webhook secret is **not** verified on the proxy (it is passed to the main app in a header when present). The bot token is **not** set in the proxy’s env.
+- **Configuration from env** (including [`.env.example`](.env.example)) — main app URL, paths, timeouts, optional bearer to the backend, optional access token. The Telegram webhook secret is **not** verified on the proxy (it is passed to the main app in a header when present). The bot token is **not** set in the proxy’s env.
 - **Logging** — stdout; the `/bot<token>/...` path in logs is masked (no real token).
 
 ## Tech stack
@@ -63,6 +70,8 @@ make run
 **Check:** `GET http://localhost:8000/health` should return `{"status":"ok"}`.
 
 **Outbound from PHP (`TelegramBot\Api` and similar):** use the proxy’s public URL instead of `https://api.telegram.org` (same scheme/port/path as Bot API: `/bot<token>/sendMessage`, etc.). The token is set only in the client app, not in the proxy’s environment variables.
+
+**OpenRouter:** in any OpenAI-compatible SDK set the base URL to `https://<proxy>/openrouter/api/v1` instead of `https://openrouter.ai/api/v1`; keep your OpenRouter key in the client. Read timeout: `OPENROUTER_READ_TIMEOUT` (default 300 s). If `PROXY_ACCESS_TOKEN` is set, add the `X-Proxy-Access-Token` header (most SDKs support default/extra headers).
 
 **Several bots (webhooks):** give each bot its own webhook URL with a tail, e.g. the bot ID (the part of the token before `:`, it is not secret):
 

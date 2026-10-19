@@ -1,6 +1,7 @@
 """Точка входа: ASGI-приложение, тонкие маршруты, клиенты в lifespan."""
 
 import logging
+import secrets
 import uuid
 from contextlib import asynccontextmanager
 from typing import Annotated
@@ -8,10 +9,12 @@ from typing import Annotated
 import httpx
 import uvicorn
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from starlette import status
+from starlette.background import BackgroundTask
 
 from app.main_app_client import MainAppClient
+from app.openrouter_forwarder import OpenRouterForwarder
 from app.settings import get_settings
 from app.telegram_api_forwarder import (
     TelegramApiForwarder,
@@ -104,13 +107,20 @@ async def lifespan(app: FastAPI):
     configure_logging(s.log_level)
     tg = TelegramApiForwarder(s)
     main_app = MainAppClient(s)
+    openrouter = OpenRouterForwarder(s)
     app.state.telegram_forwarder = tg
     app.state.main_app = main_app
+    app.state.openrouter = openrouter
+    app.state.proxy_access_token = s.proxy_access_token
+    if s.proxy_access_token is None:
+        log.warning("PROXY_ACCESS_TOKEN не задан: исходящие маршруты открыты для всех")
     log.info("Сервис стартовал: исходящий Bot API — прокси /bot<token>/method без хранения токена")
     log.info("Пересылка вебхука к основному приложению: %s", main_app.forward_url_display)
+    log.info("Прокси OpenRouter: /openrouter/<path> → https://openrouter.ai/<path>")
     yield
     await tg.aclose()
     await main_app.aclose()
+    await openrouter.aclose()
     log.info("Сервис остановлен.")
 
 
@@ -138,12 +148,33 @@ def create_app() -> FastAPI:
     base = s.proxy_incoming_webhook_path.rstrip("/")
     for path in (base, base + "/{suffix:path}"):
         app.add_api_route(path, telegram_incoming_webhook, methods=["POST"])
+    app.add_api_route(
+        "/openrouter/{path:path}",
+        forward_openrouter,
+        methods=_TELEGRAM_FORWARD_METHODS,
+        dependencies=[Depends(require_proxy_access)],
+        tags=["outgoing-openrouter"],
+        summary="Прозрачный прокси в openrouter.ai (ключ в Authorization клиента)",
+    )
     app.include_router(router)
     return app
 
 
 def get_telegram_forwarder(request: Request) -> TelegramApiForwarder:
     return request.app.state.telegram_forwarder
+
+
+def require_proxy_access(request: Request) -> None:
+    """Если задан PROXY_ACCESS_TOKEN — исходящие маршруты только с верным X-Proxy-Access-Token."""
+    expected: str | None = request.app.state.proxy_access_token
+    if expected is None:
+        return
+    got = request.headers.get("X-Proxy-Access-Token", "")
+    if not secrets.compare_digest(got.encode(), expected.encode()):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="неверный или отсутствующий X-Proxy-Access-Token",
+        )
 
 
 @router.get("/health", tags=["service"])
@@ -154,6 +185,7 @@ async def health() -> dict[str, str]:
 @router.api_route(
     "/{bot_segment}/{api_method}",
     methods=_TELEGRAM_FORWARD_METHODS,
+    dependencies=[Depends(require_proxy_access)],
     tags=["outgoing-telegram"],
     summary="Прозрачный прокси в api.telegram.org (как в Bot API, токен в path)",
 )
@@ -250,6 +282,45 @@ async def telegram_incoming_webhook(
         content=up.content,
         status_code=up.status_code,
         media_type=up.headers.get("content-type") or "text/plain",
+    )
+
+
+async def forward_openrouter(request: Request, path: str) -> Response:
+    forwarder: OpenRouterForwarder = request.app.state.openrouter
+    if any(seg in (".", "..") for seg in path.split("/")):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="некорректный путь OpenRouter",
+        )
+    rid = str(uuid.uuid4())[:8]
+    try:
+        up = await forwarder.send(request, path)
+    except httpx.ConnectTimeout:
+        log.warning("[%s] OpenRouter connect timeout", rid)
+        return JSONResponse(
+            {"error": "openrouter_connect_timeout"},
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+        )
+    except httpx.ReadTimeout:
+        log.warning("[%s] OpenRouter read timeout", rid)
+        return JSONResponse(
+            {"error": "openrouter_read_timeout"},
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+        )
+    except httpx.RequestError as e:
+        log.warning("[%s] OpenRouter request error: %s", rid, type(e).__name__)
+        return JSONResponse(
+            {
+                "error": "openrouter_unreachable",
+                "detail": type(e).__name__,
+            },
+            status_code=status.HTTP_502_BAD_GATEWAY,
+        )
+    return StreamingResponse(
+        up.aiter_bytes(),
+        status_code=up.status_code,
+        headers=OpenRouterForwarder.response_headers(up),
+        background=BackgroundTask(up.aclose),
     )
 
 

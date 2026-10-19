@@ -25,6 +25,7 @@ _SKIP_REQUEST_HEADERS: frozenset[bytes] = frozenset(
         b"transfer-encoding",
         b"upgrade",
         b"authorization",  # не пересылаем клиентский Authorization в api.telegram.org
+        b"x-proxy-access-token",  # секрет доступа к самому прокси
     }
 )
 

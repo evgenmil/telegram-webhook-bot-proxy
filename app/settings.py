@@ -31,11 +31,17 @@ class Settings(BaseSettings):
     # getUpdates: Telegram держит соединение до timeout (макс. 50) — read должен быть с запасом.
     http_connect_timeout: float = 5.0
     http_read_timeout: float = 90.0
+    # OpenRouter: генерация без stream может идти минутами — read с запасом
+    openrouter_read_timeout: float = 300.0
 
     log_level: str = "INFO"
 
     # Опционально: Bearer к основному приложению при пересылке вебхука
     main_app_bearer_token: str | None = None
+
+    # Опционально: общий секрет для исходящих маршрутов (/bot…, /openrouter/…).
+    # Если задан — клиент обязан прислать его в заголовке X-Proxy-Access-Token.
+    proxy_access_token: str | None = None
 
     @field_validator("main_app_base_url")
     @classmethod
@@ -45,7 +51,7 @@ class Settings(BaseSettings):
             raise ValueError("MAIN_APP_BASE_URL must be non-empty")
         return s
 
-    @field_validator("main_app_bearer_token", mode="before")
+    @field_validator("main_app_bearer_token", "proxy_access_token", mode="before")
     @classmethod
     def empty_str_to_none(cls, v: Any) -> str | None:
         if v is None or (isinstance(v, str) and not v.strip()):
