@@ -278,6 +278,14 @@ async def telegram_incoming_webhook(
             },
             status_code=status.HTTP_502_BAD_GATEWAY,
         )
+    if not up.is_success:
+        log.warning(
+            "[%s] main app responded %s for POST %s: %s",
+            rid,
+            up.status_code,
+            up.request.url.copy_with(query=None),
+            up.text[:200],
+        )
     return Response(
         content=up.content,
         status_code=up.status_code,

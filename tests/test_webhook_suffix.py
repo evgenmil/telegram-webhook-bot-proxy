@@ -52,3 +52,21 @@ def test_webhook_rejects_dot_segments(client_and_calls) -> None:
     resp = client.post("/webhook/telegram/a/%2E%2E/admin", content=b"{}")
     assert resp.status_code == 404
     assert calls == []
+
+
+def test_webhook_logs_non_2xx_from_main_app(caplog) -> None:
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, text="no such route")
+
+    with TestClient(app) as client:
+        app.state.main_app._client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+        )
+        with caplog.at_level("WARNING", logger="app.main"):
+            resp = client.post("/webhook/telegram/111111111", content=b"{}")
+
+    assert resp.status_code == 404
+    assert resp.text == "no such route"
+    assert "main app responded 404" in caplog.text
+    assert "http://127.0.0.1/api/telegram/webhook/111111111" in caplog.text
+    assert "no such route" in caplog.text
