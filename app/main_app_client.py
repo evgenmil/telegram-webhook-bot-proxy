@@ -45,8 +45,9 @@ class MainAppClient:
         body: bytes,
         content_type: str | None,
         x_telegram_secret: str | None,
+        suffix: str = "",
     ) -> httpx.Response:
-        """Пересылает сырой payload на основной сервис."""
+        """Пересылает сырой payload на основной сервис; suffix — хвост пути (например id бота)."""
         headers: dict[str, str] = {}
         if content_type:
             headers["Content-Type"] = content_type
@@ -54,4 +55,5 @@ class MainAppClient:
             headers["X-Telegram-Bot-Api-Secret-Token"] = x_telegram_secret
         if self._bearer is not None:
             headers["Authorization"] = f"Bearer {self._bearer}"
-        return await self._client.post(self._url, content=body, headers=headers)
+        url = f"{self._url}/{suffix}" if suffix else self._url
+        return await self._client.post(url, content=body, headers=headers)

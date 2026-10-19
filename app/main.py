@@ -133,12 +133,11 @@ def create_app() -> FastAPI:
         return await call_next(request)
 
     s = get_settings()
-    # Важно: этот путь — до router с /{a}/{b}, иначе POST /webhook/... уйдёт в forward
-    app.add_api_route(
-        s.proxy_incoming_webhook_path,
-        telegram_incoming_webhook,
-        methods=["POST"],
-    )
+    # Важно: эти пути — до router с /{a}/{b}, иначе POST /webhook/... уйдёт в forward.
+    # Хвост после пути вебхука (например id бота) пробрасывается в основное приложение как есть.
+    base = s.proxy_incoming_webhook_path.rstrip("/")
+    for path in (base, base + "/{suffix:path}"):
+        app.add_api_route(path, telegram_incoming_webhook, methods=["POST"])
     app.include_router(router)
     return app
 
@@ -209,6 +208,12 @@ async def telegram_incoming_webhook(
     request: Request,
 ) -> Response:
     main_app: MainAppClient = request.app.state.main_app
+    suffix = request.path_params.get("suffix", "").strip("/")
+    if suffix and any(seg in ("", ".", "..") for seg in suffix.split("/")):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="некорректный хвост пути вебхука",
+        )
     rid = str(uuid.uuid4())[:8]
     x_secret_in = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
     raw = await request.body()
@@ -218,6 +223,7 @@ async def telegram_incoming_webhook(
             body=raw,
             content_type=ct,
             x_telegram_secret=x_secret_in,
+            suffix=suffix,
         )
     except httpx.ConnectTimeout:
         log.warning("[%s] main app connect timeout", rid)

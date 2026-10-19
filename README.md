@@ -5,7 +5,7 @@ HTTP layer between your **main application** and the **Telegram Bot API**: outbo
 ## Features
 
 - **Outbound traffic (transparent Bot API)** — same path shape as `https://api.telegram.org`: `https://<proxy>/bot<token>/<method>`. The token is **not** stored by the service; it is passed in the URL by the client (as in the official API). Works with libraries such as `TelegramBot\Api` (PHP): set the host to the proxy URL; the path layout stays the same.
-- **Incoming webhook** — `POST` to a configurable path (default `/webhook/telegram`): the request body is forwarded to the configured main-app URL.
+- **Incoming webhook** — `POST` to a configurable path (default `/webhook/telegram`): the request body is forwarded to the configured main-app URL. Any path tail is passed through as is: `/webhook/telegram/<bot_id>` → `MAIN_APP_INCOMING_PATH/<bot_id>` — one proxy serves several bots.
 - **Health check** — `GET /health` for probes and monitoring.
 - **Configuration from env** (including [`.env.example`](.env.example)) — main app URL, paths, timeouts, optional bearer to the backend. The Telegram webhook secret is **not** verified on the proxy (it is passed to the main app in a header when present). The bot token is **not** set in the proxy’s env.
 - **Logging** — stdout; the `/bot<token>/...` path in logs is masked (no real token).
@@ -63,6 +63,16 @@ make run
 **Check:** `GET http://localhost:8000/health` should return `{"status":"ok"}`.
 
 **Outbound from PHP (`TelegramBot\Api` and similar):** use the proxy’s public URL instead of `https://api.telegram.org` (same scheme/port/path as Bot API: `/bot<token>/sendMessage`, etc.). The token is set only in the client app, not in the proxy’s environment variables.
+
+**Several bots (webhooks):** give each bot its own webhook URL with a tail, e.g. the bot ID (the part of the token before `:`, it is not secret):
+
+| | Bot `111111111:AAA...` | Bot `222222222:BBB...` |
+|---|---|---|
+| `setWebhook` url | `https://<proxy>/webhook/telegram/111111111` | `https://<proxy>/webhook/telegram/222222222` |
+| Main app receives | `POST /api/telegram/webhook/111111111` | `POST /api/telegram/webhook/222222222` |
+| Send messages | `https://<proxy>/bot111111111:AAA.../sendMessage` | `https://<proxy>/bot222222222:BBB.../sendMessage` |
+
+The proxy does not interpret the tail; `.` / `..` segments are rejected with `404`.
 
 ### 3. Tests (dev dependencies)
 
